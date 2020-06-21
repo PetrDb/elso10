@@ -1,0 +1,190 @@
+﻿FUNCTION_BLOCK "VFD_GSeries_BK"
+{ S7_Optimized_Access := 'TRUE' }
+VERSION : 0.1
+   VAR_INPUT RETAIN
+      "RD_HW-ID" : HW_SUBMODULE;
+      "WR_HW-ID" : HW_SUBMODULE;
+   END_VAR
+   VAR_INPUT 
+      SetPoint_Hz { ExternalAccessible := 'False'; ExternalVisible := 'False'; ExternalWritable := 'False'} : Real;
+      Reset : Bool;
+      Start : Bool;
+      Forward : Bool;
+      Emergency_Stop : Bool;
+   END_VAR
+   VAR_INPUT RETAIN
+      AxisNo : Int;
+   END_VAR
+   VAR_INPUT 
+      Read_Clock : Bool;
+   END_VAR
+
+   VAR_OUTPUT 
+      Faulted : Bool;
+      Ready : Bool;
+      Active : Bool;
+      AtReference : Bool;
+      ActualSpeed_rpm : Real;
+      ActualSpeed_Hz : Real;
+      ActualCurrent : Real;
+      Actual_Torque : Real;
+      Actual_Alarm : Int;
+      Actual_Fault : Int;
+   END_VAR
+
+   VAR RETAIN
+      ref_speed_p2001 { ExternalAccessible := 'False'; ExternalVisible := 'False'; ExternalWritable := 'False'} : Real := 3000.0;
+      ref_current_p2003 { ExternalAccessible := 'False'; ExternalVisible := 'False'; ExternalWritable := 'False'} : Real := 0.0;
+      ref_torque_p2004 { ExternalAccessible := 'False'; ExternalVisible := 'False'; ExternalWritable := 'False'} : Real := 0.0;
+   END_VAR
+   VAR 
+      InData { ExternalAccessible := 'False'; ExternalVisible := 'False'; ExternalWritable := 'False'} : Array[1..6] of Int;
+      OutData { ExternalAccessible := 'False'; ExternalVisible := 'False'; ExternalWritable := 'False'} : Array[1..6] of Int;
+      g_telegram352 : "UDT_G_Telegram_352";
+      actual_speed_INT { ExternalAccessible := 'False'; ExternalVisible := 'False'; ExternalWritable := 'False'} : Int;
+      actual_current_INT { ExternalAccessible := 'False'; ExternalVisible := 'False'; ExternalWritable := 'False'} : Int;
+      actual_torque_INT { ExternalAccessible := 'False'; ExternalVisible := 'False'; ExternalWritable := 'False'} : Int;
+      setPoint_INT : Int;
+      RETVAL_RD : Int;
+      RETVAL_WR : Int;
+   END_VAR
+
+   VAR_TEMP 
+      norm_x_in : Real;
+      norm_x_out : Real;
+      actual_speed_temp : Real;
+      status_word2_real : Real;
+      status_word2_int : Int;
+   END_VAR
+
+
+BEGIN
+	
+	
+	// Azzero array di lettura a ogni scansione. Pulisco per fare posto ai nuovi valori
+	FILL_BLK(IN := 0,
+	         COUNT := 6,
+	         OUT => #InData[1]);
+	
+	// Ricevo word di stato
+	#RETVAL_RD := DPRD_DAT(LADDR := #"RD_HW-ID", RECORD => #InData);
+	
+	// Estraggo le word che compongono il telegramma
+	#actual_speed_INT := #InData[2];
+	#actual_current_INT := #InData[3];
+	#actual_torque_INT := #InData[4];
+	#Actual_Alarm := #InData[5];
+	#Actual_Fault := #InData[6];
+	
+	//Estraggo bit da word di stato
+	
+	#g_telegram352.Receive.ZSW_1.Ready_to_start := #InData[1].%X0;
+	#g_telegram352.Receive.ZSW_1.Ready := #InData[1].%X1;
+	#g_telegram352.Receive.ZSW_1.Operation_enabled := #InData[1].%X2;
+	#g_telegram352.Receive.ZSW_1.Fault_active := #InData[1].%X3;
+	#g_telegram352.Receive.ZSW_1.OFF2_inactive := #InData[1].%X4;
+	#g_telegram352.Receive.ZSW_1.OFF3_inactive := #InData[1].%X5;
+	#g_telegram352.Receive.ZSW_1.Closing_lookout_active := #InData[1].%X6;
+	#g_telegram352.Receive.ZSW_1.Alarm_active := #InData[1].%X7;
+	 
+	
+	#g_telegram352.Receive.ZSW_1.Speed_deviation_in_tol := #InData[1].%X8;
+	#g_telegram352.Receive.ZSW_1.Master_control_requested := #InData[1].%X9;
+	#g_telegram352.Receive.ZSW_1.Comp_speed_reached := #InData[1].%X10;
+	#g_telegram352.Receive.ZSW_1.I_M_P_Limit_reached := #InData[1].%X11;
+	#g_telegram352.Receive.ZSW_1.Holding_brake_open := #InData[1].%X12;
+	#g_telegram352.Receive.ZSW_1.Alarm_motor_overtemp := #InData[1].%X13;
+	#g_telegram352.Receive.ZSW_1.Motor_rotates_clockwise := #InData[1].%X14;
+	#g_telegram352.Receive.ZSW_1.Alarm_inverter_thermal_overload := #InData[1].%X15;
+	
+	// Compongo parametri uscita blocco funzione
+	
+	#Faulted := #g_telegram352.Receive.ZSW_1.Fault_active;
+	#Ready := #g_telegram352.Receive.ZSW_1.Ready_to_start;
+	#Active := #g_telegram352.Receive.ZSW_1.Ready;
+	
+	// Gestione AtReference - 1 - Velocità impostata raggiunta
+	
+	///#SINA_PARA_S_Instance(Start:= "Clock_2Hz" AND #setPoint_INT <> 0,
+	                   //   ReadWrite:=0,
+	                    //  LAddr:=#"RD_HW-ID",
+	                    ///  Parameter:=53,
+	                    ///  ValueRead=>#status_word2_real);
+	
+	IF (#Start = 0 OR #setPoint_INT = 0) THEN
+	    
+	    #status_word2_real := 0.0;
+	    
+	END_IF;
+	
+	#status_word2_int := REAL_TO_INT(#status_word2_real);
+	#AtReference := #status_word2_int.%X6;
+	
+	// Denormalizzazione valori di processo
+	
+	#ActualSpeed_rpm := (#actual_speed_INT / REAL#16384.0) * #ref_speed_p2001;
+	#ActualCurrent := (#actual_current_INT / REAL#16384.0) * #ref_current_p2003;
+	#Actual_Torque := (#actual_torque_INT / REAL#16384.0) * #ref_torque_p2004;
+	
+	// Frequenza uscita
+	
+	#norm_x_out := NORM_X(MIN := 0, VALUE := #actual_speed_INT, MAX := 16383);
+	#ActualSpeed_Hz := SCALE_X(MIN := 0.0, VALUE := #norm_x_out, MAX := 100.0);
+	
+	// Ricevo parametri di input
+	
+	#g_telegram352.Send.STW_1.Acknowledge := #Reset;
+	#g_telegram352.Send.STW_1.OFF2 := #Emergency_Stop;
+	#g_telegram352.Send.STW_1.ON_OFF1 := #Start;
+	#g_telegram352.Send.STW_1.OFF3 := true;
+	#g_telegram352.Send.STW_1.Control_via_PLC := true;
+	#g_telegram352.Send.STW_1.Direction_reversal := #Forward;
+	#g_telegram352.Send.STW_1.Do_not_disable_RFG := true;
+	#g_telegram352.Send.STW_1.Enable_Operation := true;
+	#g_telegram352.Send.STW_1.Enable_RFG := true;
+	#g_telegram352.Send.STW_1.Enable_setpoint := true;
+	
+	// Compongo word di comando
+	
+	#OutData[1].%X0 := #g_telegram352.Send.STW_1.ON_OFF1;
+	#OutData[1].%X1 := #g_telegram352.Send.STW_1.OFF2;
+	#OutData[1].%X2 := #g_telegram352.Send.STW_1.OFF3;
+	#OutData[1].%X3 := #g_telegram352.Send.STW_1.Enable_Operation;
+	#OutData[1].%X4 := #g_telegram352.Send.STW_1.Do_not_disable_RFG;
+	#OutData[1].%X5 := #g_telegram352.Send.STW_1.Enable_RFG;
+	#OutData[1].%X6 := #g_telegram352.Send.STW_1.Enable_setpoint;
+	#OutData[1].%X7 := #g_telegram352.Send.STW_1.Acknowledge;
+	
+	#OutData[1].%X8 := #g_telegram352.Send.STW_1.Reserved_Bit_8;
+	#OutData[1].%X9 := #g_telegram352.Send.STW_1.Reserved_Bit_9;
+	#OutData[1].%X10 := #g_telegram352.Send.STW_1.Control_via_PLC;
+	#OutData[1].%X11 := #g_telegram352.Send.STW_1.Direction_reversal;
+	#OutData[1].%X12 := #g_telegram352.Send.STW_1.Reserved_Bit_12;
+	#OutData[1].%X13 := 0;
+	#OutData[1].%X14 := 0;
+	#OutData[1].%X15 := #g_telegram352.Send.STW_1.Reserved_Bit_15;
+	
+	// Scalatura da Real a Int 0 - 4000 Hex
+	
+	#norm_x_in := NORM_X(MIN := 0.0, VALUE := #SetPoint_Hz, MAX := 100.0);
+	#setPoint_INT := SCALE_X(MIN := 0, VALUE := #norm_x_in, MAX := 16384);
+	
+	// Scrivo velocità
+	
+	#OutData[2] := #setPoint_INT;
+	
+	// Scrivo valore di default nelle word non utilizzate
+	
+	#OutData[3] := 0;
+	#OutData[4] := 0;
+	#OutData[5] := 0;
+	#OutData[6] := 0;
+	
+	// Invio word di comando
+	
+	#RETVAL_WR := DPWR_DAT(LADDR := #"RD_HW-ID", RECORD := #OutData);
+	
+	
+	
+END_FUNCTION_BLOCK
+
